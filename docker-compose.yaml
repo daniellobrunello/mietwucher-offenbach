@@ -1,0 +1,69 @@
+
+services:
+  mongodb:
+    image: mongo:latest
+    container_name: flathunter-mongodb
+    restart: always
+    ports:
+      - "27017:27017"  # Nur von localhost erreichbar
+    volumes:
+      - mongodb_data:/data/db
+    environment:
+      - MONGO_INITDB_DATABASE=flathunter
+
+  app:
+    build: .
+    shm_size: 512M # Workaround to fix docker crashes because of to small /dev/shm
+    # platform: linux/amd64 # For M1 to install google-chrome-stable; However still crashes on M1 when launching chrome (selenium.common.exceptions.WebDriverException: Message: unknown error: unable to discover open window in chrome (Session info: headless chrome=109.0.5414.119))
+    restart: always
+    depends_on:
+      - mongodb
+    environment:
+      # - FLATHUNTER_TARGET_URLS=https://www.immobilienscout24.de/Suche/...;https://www.kleinanzeigen.de/...
+      # - FLATHUNTER_DATABASE_LOCATION=
+      # - FLATHUNTER_VERBOSE_LOG=
+      - FLATHUNTER_LOOP_PERIOD_SECONDS=600
+      # - FLATHUNTER_WEBSITE_SESSION_KEY=
+      # - FLATHUNTER_WEBSITE_DOMAIN=
+      # - FLATHUNTER_2CAPTCHA_KEY=
+      # - FLATHUNTER_IMAGETYPERZ_TOKEN=
+      - FLATHUNTER_HEADLESS_BROWSER=yes
+      - MONGO_URI=mongodb://mongodb:27017/
+    volumes:
+      - ./:/usr/src/app
+      - ./debug_pages:/usr/src/app/debug_pages
+
+  frontend:
+    build: ./frontend
+    container_name: flathunter-frontend
+    restart: always
+    depends_on:
+      - mongodb
+    ports:
+      - "8000:8000"  # Nur von localhost erreichbar
+    environment:
+      - MONGO_URI=mongodb://mongodb:27017/
+    volumes:
+      - ./frontend:/app
+
+  llm_processor:
+    build: .
+    container_name: flathunter-llm-processor
+    restart: always
+    depends_on:
+      - mongodb
+    command: python3 process_exposes_loop.py
+    environment:
+      - MONGODB_URI=mongodb://mongodb:27017/
+      - MONGODB_DB=flathunter
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4-turbo}  # Default to gpt-4-turbo
+      - PROCESSING_INTERVAL=300  # Process every 5 minutes
+      - PROCESSING_DAYS_BACK=7   # Look back 7 days
+    env_file:
+      - .env
+    volumes:
+      - ./:/usr/src/app
+
+volumes:
+  mongodb_data:

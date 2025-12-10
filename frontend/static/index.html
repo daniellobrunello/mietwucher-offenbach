@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mietpreis-Monitor Offenbach</title>
+    
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="/static/style.css">
+    
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="header-content">
+                <h1>🏠 Mietpreis-Monitor Offenbach</h1>
+                <p class="subtitle">Transparenz gegen Mietwucher</p>
+            </div>
+            <div class="stats">
+                <span id="total-count">Lädt...</span>
+                <span id="high-rent-count"></span>
+            </div>
+        </header>
+        
+        <div class="info-banner">
+            <h3>📊 Über dieses Projekt</h3>
+            <p>
+                Diese Seite sammelt automatisch aktuelle Wohnungsanzeigen aus Offenbach am Main und kategorisiert sie nach 
+                ihrem Mietpreis pro Quadratmeter. Unser Ziel ist es, <strong>Transparenz über überhöhte Mietpreise</strong> 
+                zu schaffen und Mieter:innen bei der Einschätzung fairer Mieten zu unterstützen.
+            </p>
+            <div class="info-grid">
+                <div class="info-item">
+                    <strong>🤖 Datenerhebung:</strong>
+                    <p>Täglich werden Wohnungsanzeigen von gängigen Immobilienportalen gesammelt und automatisch analysiert.</p>
+                </div>
+                <div class="info-item">
+                    <strong>📐 Kategorisierung:</strong>
+                    <p>
+                        Die Mieten werden nach EUR/m² eingeteilt:<br>
+                        <span class="category-tag niedrig">Niedrig ≤11 EUR/m²</span>
+                        <span class="category-tag normal">Normal 11-13 EUR/m²</span>
+                        <span class="category-tag hoch">Hoch >13 EUR/m²</span>
+                    </p>
+                </div>
+                <div class="info-item">
+                    <strong>⚖️ Gegen Mietwucher:</strong>
+                    <p>
+                        Deutlich überhöhte Mieten können gegen das Wirtschaftsstrafgesetz (§5 WiStrG) und den 
+                        Wucher-Tatbestand (§291 StGB) verstoßen. Bei verdächtigen Angeboten bieten wir eine Meldefunktion.
+                    </p>
+                </div>
+            </div>
+        </div>
+        
+        <div class="statistics-section">
+            <h2>📈 Aktuelle Statistik</h2>
+            <p class="section-description">
+                Verteilung der gefundenen Wohnungen nach Mietpreis pro Quadratmeter
+            </p>
+            
+            <div class="stats-grid">
+                <div class="stat-card niedrig">
+                    <div class="stat-label">Niedrige Miete<br>≤ 11 EUR/m²</div>
+                    <div class="stat-value" id="stat-niedrig">-</div>
+                    <div class="stat-description">Wohnungen</div>
+                </div>
+                
+                <div class="stat-card normal">
+                    <div class="stat-label">Normale Miete<br>11-13 EUR/m²</div>
+                    <div class="stat-value" id="stat-normal">-</div>
+                    <div class="stat-description">Wohnungen</div>
+                </div>
+                
+                <div class="stat-card hoch">
+                    <div class="stat-label">Hohe Miete<br>> 13 EUR/m²</div>
+                    <div class="stat-value" id="stat-hoch">-</div>
+                    <div class="stat-description">Wohnungen</div>
+                </div>
+            </div>
+            
+            <div class="chart-container">
+                <h3 class="chart-title">Zeitliche Entwicklung</h3>
+                <canvas id="priceChart"></canvas>
+                <p class="chart-description">
+                    Die Grafik zeigt, wie sich die Anzahl der Wohnungen in den verschiedenen Preiskategorien 
+                    über die letzten Tage entwickelt hat.
+                </p>
+            </div>
+        </div>
+        
+        <div class="controls">
+            <h3>🔍 Filter & Sortierung</h3>
+            <div class="controls-content">
+                <div class="filter-controls">
+                    <label>
+                        <input type="checkbox" id="filter-high-rent">
+                        <span>Nur hohe Mieten anzeigen</span>
+                    </label>
+                    <label>
+                        <input type="checkbox" id="filter-low-rent">
+                        <span>Nur niedrige Mieten anzeigen</span>
+                    </label>
+                </div>
+                <div class="legend">
+                    <span class="legend-label">Kategorien:</span>
+                    <span class="legend-item"><span class="indicator low"></span> Niedrig ≤11 EUR/m²</span>
+                    <span class="legend-item"><span class="indicator normal"></span> Normal 11-13 EUR/m²</span>
+                    <span class="legend-item"><span class="indicator high"></span> Hoch >13 EUR/m²</span>
+                </div>
+            </div>
+        </div>
+        
+        <div class="table-container">
+            <h2>📋 Alle Wohnungsanzeigen</h2>
+            <p class="section-description">
+                Klicken Sie auf die Spaltenüberschriften, um die Tabelle zu sortieren. 
+                Die farbige Markierung zeigt die Mietpreiskategorie an.
+            </p>
+            <table id="apartments-table">
+                <thead>
+                    <tr>
+                        <th class="sortable" data-sort="title">Titel</th>
+                        <th class="sortable" data-sort="address">Adresse</th>
+                        <th class="sortable" data-sort="price">Preis</th>
+                        <th class="sortable" data-sort="size">Größe</th>
+                        <th class="sortable" data-sort="rooms">Zimmer</th>
+                        <th class="sortable" data-sort="price_per_sqm">EUR/m²</th>
+                        <th class="sortable" data-sort="furnished">Möbliert</th>
+                        <th class="sortable" data-sort="crawler">Quelle</th>
+                        <th>Link</th>
+                    </tr>
+                </thead>
+                <tbody id="apartments-tbody">
+                    <tr>
+                        <td colspan="9" class="loading">Lade Wohnungen...</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+        
+        <footer>
+            <div class="footer-content">
+                <div class="footer-section">
+                    <h4>ℹ️ Hinweise</h4>
+                    <p>
+                        Die Daten werden automatisch erhoben und können Fehler enthalten. 
+                        Diese Seite dient ausschließlich Informationszwecken.
+                    </p>
+                </div>
+                <div class="footer-section">
+                    <h4>🤝 Ihre Rechte</h4>
+                    <p>
+                        Informieren Sie sich über Ihre Rechte als Mieter:in beim 
+                        <a href="https://www.mieterbund.de" target="_blank">Deutschen Mieterbund</a> 
+                        oder bei Ihrer örtlichen Mieterberatung.
+                    </p>
+                </div>
+                <div class="footer-section">
+                    <h4>⚖️ Rechtliches</h4>
+                    <p>
+                        Bei Verdacht auf Mietwucher können Sie sich an das örtliche Ordnungsamt 
+                        oder eine Verbraucherzentrale wenden.
+                    </p>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                <p>
+                    Stand: <span id="last-update">wird geladen...</span> | 
+                    Ein Projekt für mehr Transparenz im Wohnungsmarkt
+                </p>
+            </div>
+        </footer>
+    </div>
+    
+    <!-- Custom JS -->
+    <script src="/static/app.js"></script>
+</body>
+</html>
+

@@ -1,0 +1,388 @@
+"""Expose crawler for ImmobilienScout"""
+from typing import Optional
+import datetime
+import re
+
+from bs4 import BeautifulSoup, Tag
+from jsonpath_ng.ext import parse
+from selenium.common.exceptions import JavascriptException
+from selenium.webdriver import Chrome
+
+from flathunter.abstract_crawler import Crawler
+from flathunter.logging_fh import logger
+from flathunter.chrome_wrapper import get_chrome_driver
+from flathunter.captcha.twocaptcha_solver import TwoCaptchaSolver
+from flathunter.exceptions import DriverLoadException
+
+STATIC_URL_PATTERN = re.compile(r'https://www\.immobilienscout24\.de')
+
+def get_result_count(soup: BeautifulSoup) -> int:
+    """Scrape the result count from the returned page"""
+    def is_result_count_element(element) -> bool:
+        if not isinstance(element, Tag):
+            return False
+        if not element.has_attr('data-is24-qa'):
+            return False
+        return element.attrs['data-is24-qa'] == 'resultlist-resultCount'
+
+    count_element = soup.find(is_result_count_element)
+    if not isinstance(count_element, Tag):
+        return 0
+    return int(count_element.text.replace('.', ''))
+
+class Immobilienscout(Crawler):
+    """Implementation of Crawler interface for ImmobilienScout"""
+
+    URL_PATTERN = STATIC_URL_PATTERN
+
+    JSON_PATH_PARSER_ENTRIES = parse("$..['resultlist.realEstate']")
+    JSON_PATH_PARSER_IMAGES = parse("$..galleryAttachments"
+                                    "..attachment[?'@xsi.type'=='common:Picture']"
+                                    "..['@href'].`sub(/(.*\\\\.jpe?g).*/, \\\\1)`")
+
+    RESULT_LIMIT = 50
+    RESULT_LIMIT = 999_999_999
+
+    FALLBACK_IMAGE_URL = "https://www.static-immobilienscout24.de/statpic/placeholder_house/" + \
+                         "496c95154de31a357afa978cdb7f15f0_placeholder_medium.png"
+
+    def __init__(self, config):
+        super().__init__(config)
+
+        self.config = config
+        self.driver = None
+        self.checkbox = False
+        self.afterlogin_string = None
+        if self.config.immoscout_cookie() is not None:
+            self.set_cookie()
+        if config.captcha_enabled():
+            self.checkbox = config.get_captcha_checkbox()
+            self.afterlogin_string = config.get_captcha_afterlogin_string()
+
+    def get_driver(self) -> Optional[Chrome]:
+        """Lazy method to fetch the driver as required at runtime"""
+        if self.driver is not None:
+            return self.driver
+        if not (self.config.captcha_enabled() and self.captcha_solver):
+            return None
+        driver_arguments = self.config.captcha_driver_arguments()
+        self.driver = get_chrome_driver(driver_arguments)
+        return self.driver
+
+    def get_driver_force(self) -> Chrome:
+        """Fetch the driver, and throw an exception if it is not configured or available"""
+        res = self.get_driver()
+        if res is None:
+            raise DriverLoadException("Unable to load chrome driver when expected")
+        return res
+
+    def get_results(self, search_url, max_pages=None):
+        """Loads the exposes from the ImmoScout site, starting at the provided URL"""
+        # convert to paged URL
+        # if '/P-' in search_url:
+        #     search_url = re.sub(r"/Suche/(.+?)/P-\d+", "/Suche/\1/P-{0}", search_url)
+        # else:
+        #     search_url = re.sub(r"/Suche/(.+?)/", r"/Suche/\1/P-{0}/", search_url)
+        if '&pagenumber' in search_url:
+            search_url = re.sub(r"&pagenumber=[0-9]", "&pagenumber={0}", search_url)
+        else:
+            search_url = search_url + '&pagenumber={0}'
+        logger.debug("Got search URL %s", search_url)
+
+        # load first page to get number of entries
+        page_no = 1
+        soup = self.get_page(search_url, self.get_driver(), page_no)
+
+        # If we are using Selenium, just parse the results from the JSON in the page response
+        if self.get_driver() is not None:
+            return self.get_entries_from_javascript()
+
+        no_of_results = get_result_count(soup)
+
+        # get data from first page
+        entries = self.extract_data(soup)
+
+        # iterate over all remaining pages
+        while len(entries) < min(no_of_results, self.RESULT_LIMIT) and \
+                (max_pages is None or page_no < max_pages):
+            logger.debug(
+                '(Next page) Number of entries: %d / Number of results: %d',
+                len(entries), no_of_results)
+            page_no += 1
+            soup = self.get_page(search_url, self.get_driver(), page_no)
+            cur_entry = self.extract_data(soup)
+
+            # if isinstance(cur_entry, list):
+            if len(cur_entry) == 0:
+                break
+            entries.extend(cur_entry)
+
+        return entries
+
+    def get_entry_html(self, entry_url):
+        """Applies a page number to a formatted search URL and fetches the exposes at that page"""
+        return str(self.get_soup_from_url(
+            entry_url,
+            driver=self.get_driver(),
+            checkbox=self.checkbox,
+            afterlogin_string=self.afterlogin_string,
+        ))
+
+    def get_entries_from_javascript(self):
+        """Get entries from JavaScript"""
+        try:
+            result_json = self.get_driver_force().execute_script('return window.IS24.resultList;')
+        except JavascriptException:
+            logger.warning("Unable to find IS24 variable in window")
+            if "Warum haben wir deine Anfrage blockiert?" in self.get_driver_force().page_source:
+                logger.error(
+                    "IS24 bot detection has identified our script as a bot - we've been blocked"
+                )
+                logger.debug(self.get_driver_force().page_source)
+            return []
+        return self.get_entries_from_json(result_json)
+
+    def get_entries_from_json(self, json):
+        """Get entries from JSON"""
+        entries = [
+            self.extract_entry_from_javascript(entry.value)
+                for entry in self.JSON_PATH_PARSER_ENTRIES.find(json)
+        ]
+        logger.debug('Number of found entries: %d', len(entries))
+        return entries
+
+    def extract_entry_from_javascript(self, entry):
+        """Get single entry from JavaScript"""
+
+        # the url that is being returned to the frontend has a placeholder for screen size.
+        # i.e. (%WIDTH% and %HEIGHT%)
+        # The website's frontend fills these variables based on the user's screen size.
+        # If we remove this part, the API will return the original size of the image.
+        #
+        # Before:
+        # https://pictures.immobilienscout24.de/listings/$$IMAGE_ID$$.jpg/ORIG/legacy_thumbnail/%WIDTH%x%HEIGHT%3E/format/webp/quality/50
+        #
+        # After: https://pictures.immobilienscout24.de/listings/$$IMAGE_ID$$.jpg
+
+        images = [image.value for image in self.JSON_PATH_PARSER_IMAGES.find(entry)]
+
+        object_id: int = int(entry.get("@id", 0))
+        return {
+            'id': object_id,
+            'url': f"https://www.immobilienscout24.de/expose/{str(object_id)}",
+            'image': images[0] if len(images) else self.FALLBACK_IMAGE_URL,
+            'images': images,
+            'title': entry.get("title", ''),
+            'address': entry.get("address", {}).get("description", {}).get("text", ''),
+            'crawler': self.get_name(),
+            'price': str(entry.get("price", {}).get("value", '')),
+            'total_price':
+                str(entry.get('calculatedTotalRent', {}).get("totalRent", {}).get('value', '')),
+            'size': str(entry.get("livingSpace", '')),
+            'rooms': str(entry.get("numberOfRooms", ''))
+        }
+
+    def set_cookie(self):
+        """Sets request header cookie parameter to identify as a logged in user"""
+        self.HEADERS['Cookie'] = f'reese84:${self.config.immoscout_cookie()}'
+
+    def get_page(self, search_url, driver=None, page_no=None):
+        """Applies a page number to a formatted search URL and fetches the exposes at that page"""
+        return self.get_soup_from_url(
+            search_url.format(page_no),
+            driver=driver,
+            checkbox=self.checkbox,
+            afterlogin_string=self.afterlogin_string,
+        )
+
+    def get_expose_details(self, expose):
+        """Loads additional details for an expose by processing the expose detail URL"""
+        if self.config.captcha_enabled():
+            # Currently (December 2024) the captcha triggers on every page request when
+            # solving with Capmonster (2captcha isn't working). It would be very expensive
+            # to solve a captcha for every single expose URL, so we skip here in the interests
+            # of saving money
+            return expose
+        
+        # Fetch detail page with proper page_type for debug saving
+        soup = self.get_soup_from_url(expose['url'], page_type="detail")
+        
+        # Initialize flexible storage structures
+        if 'features' not in expose:
+            expose['features'] = {}
+        if 'amenities' not in expose:
+            expose['amenities'] = []
+        
+        # Extract availability date
+        date = soup.find('dd', {"class": "is24qa-bezugsfrei-ab"})
+        expose['from'] = datetime.datetime.now().strftime("%2d.%2m.%Y")
+        if date is not None:
+            if not re.match(r'.*sofort.*', date.text):
+                expose['from'] = date.text.strip()
+        
+        # Extract description
+        description_elem = soup.find('pre', {"class": "is24qa-objektbeschreibung"})
+        if description_elem:
+            expose['description'] = description_elem.get_text(strip=True)
+        
+        # Extract additional details from the detail list
+        detail_list = soup.find_all('dl', {"class": "is24qa-liste"})
+        for dl in detail_list:
+            dts = dl.find_all('dt')
+            dds = dl.find_all('dd')
+            for dt, dd in zip(dts, dds):
+                label = dt.get_text(strip=True)
+                value = dd.get_text(strip=True)
+                
+                # Map common fields
+                if 'Etage' in label or 'Stockwerk' in label:
+                    expose['features']['floor'] = value
+                elif 'Baujahr' in label:
+                    expose['features']['building_year'] = value
+                elif 'Kaution' in label or 'Deposit' in label:
+                    expose['features']['deposit'] = value
+                elif 'Nebenkosten' in label:
+                    expose['features']['additional_costs'] = value
+                elif 'Heizkosten' in label:
+                    expose['features']['heating_costs'] = value
+                elif 'Energieausweis' in label:
+                    expose['features']['energy_certificate'] = value
+                elif 'Energieeffizienzklasse' in label:
+                    expose['features']['energy_class'] = value
+                elif 'Endenergiebedarf' in label or 'Energieverbrauch' in label:
+                    expose['features']['energy_consumption'] = value
+                elif 'Heizungsart' in label:
+                    expose['features']['heating_type'] = value
+                elif 'Wesentliche Energieträger' in label:
+                    expose['features']['energy_source'] = value
+                else:
+                    # Store any other fields with sanitized key
+                    key = label.lower().replace(' ', '_').replace(':', '')
+                    expose['features'][key] = value
+        
+        # Extract amenities/features from the Ausstattung section
+        ausstattung_section = soup.find('div', {"class": "criteriagroup"})
+        if ausstattung_section:
+            feature_items = ausstattung_section.find_all('span', {"class": "palm-hide"})
+            for item in feature_items:
+                feature_text = item.get_text(strip=True)
+                if feature_text and feature_text not in expose['amenities']:
+                    expose['amenities'].append(feature_text)
+        
+        # Also check for common amenities in other sections
+        # Look for specific amenity indicators
+        amenity_keywords = {
+            'Balkon': 'balcony',
+            'Terrasse': 'terrace',
+            'Garten': 'garden',
+            'Einbauküche': 'fitted_kitchen',
+            'Küche': 'kitchen',
+            'Keller': 'basement',
+            'Aufzug': 'elevator',
+            'Fahrstuhl': 'elevator',
+            'Garage': 'garage',
+            'Stellplatz': 'parking',
+            'Parkplatz': 'parking',
+            'Barrierefrei': 'barrier_free',
+            'Möbliert': 'furnished',
+            'WG-geeignet': 'shared_flat_suitable',
+            'Haustiere': 'pets_allowed'
+        }
+        
+        page_text = soup.get_text()
+        for keyword, amenity_name in amenity_keywords.items():
+            if keyword in page_text and amenity_name not in expose['amenities']:
+                expose['amenities'].append(amenity_name)
+        
+        # Extract contact information if available
+        contact_name = soup.find('div', {"class": "is24-anbieter-contact__name"})
+        if contact_name:
+            expose['features']['contact_name'] = contact_name.get_text(strip=True)
+        
+        # Extract additional price information
+        total_rent = soup.find('dd', {"class": "is24qa-gesamtmiete"})
+        if total_rent:
+            expose['features']['total_rent'] = total_rent.get_text(strip=True)
+        
+        base_rent = soup.find('dd', {"class": "is24qa-kaltmiete"})
+        if base_rent:
+            expose['features']['base_rent'] = base_rent.get_text(strip=True)
+        
+        return expose
+
+    # pylint: disable=too-many-locals
+    # pylint: disable=too-many-branches
+    def extract_data(self, soup):
+        """Extracts all exposes from a provided Soup object"""
+        entries = []
+
+        results_list = soup.find(id="resultListItems")
+        title_elements = results_list.find_all(
+            lambda e: e.name == 'a' and e.has_attr('class') and \
+                      'result-list-entry__brand-title-container' in e['class']
+        ) if results_list else []
+        expose_ids = []
+        expose_urls = []
+        expose_id = 0
+        for link in title_elements:
+            expose_id = int(link.get('href').split('/')[-1].replace('.html', ''))
+            expose_ids.append(expose_id)
+            if len(str(expose_id)) > 5:
+                expose_urls.append('https://www.immobilienscout24.de/expose/' + str(expose_id))
+            else:
+                expose_urls.append(link.get('href'))
+
+        attr_container_els = soup.find_all(
+            lambda e: e.has_attr('data-is24-qa') and e['data-is24-qa'] == "attributes"
+        )
+        address_fields = soup.find_all(
+            lambda e: e.has_attr('class') and 'result-list-entry__address' in e['class']
+        )
+        gallery_elements = soup.find_all(
+            lambda e: e.has_attr('class') and 'result-list-entry__gallery-container' in e['class']
+        )
+        for idx, title_el in enumerate(title_elements):
+            attr_els = attr_container_els[idx].find_all('dd')
+            try:
+                address = address_fields[idx].text.strip()
+            except AttributeError:
+                address = "No address given"
+
+            gallery_tag = gallery_elements[idx].find("div", {"class": "gallery-container"})
+            if gallery_tag is not None:
+                image_tag = gallery_tag.find("img")
+                try:
+                    image = image_tag["src"]
+                except KeyError:
+                    image = image_tag["data-lazy-src"]
+            else:
+                image = None
+
+            details = {
+                'id': expose_ids[idx],
+                'url': expose_urls[idx],
+                'image': image,
+                'title': title_el.text.strip().replace('NEU', ''),
+                'address': address,
+                'crawler': self.get_name()
+            }
+            if len(attr_els) > 2:
+                details['price'] = attr_els[0].text.strip().split(' ')[0].strip()
+                details['size'] = attr_els[1].text.strip().split(' ')[0].strip() + " qm"
+                details['rooms'] = attr_els[2].text.strip().split(' ')[0].strip()
+            else:
+                # If there are less than three elements, it is unclear which is what.
+                details['price'] = ''
+                details['size'] = ''
+                details['rooms'] = ''
+            # print entries
+            exist = False
+            for expose in entries:
+                if expose_id == expose["id"]:
+                    exist = True
+                    break
+            if not exist:
+                entries.append(details)
+
+        logger.debug('Number of entries found: %d', len(entries))
+        return entries
