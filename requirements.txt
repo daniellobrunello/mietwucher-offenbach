@@ -1,0 +1,15 @@
+backoff
+beautifulsoup4
+geopy
+jsonpath-ng
+lxml
+markdownify
+openai
+pymongo
+python-dotenv
+PyYAML
+requests
+requests-random-user-agent
+selenium
+tenacity
+undetected-chromedriver

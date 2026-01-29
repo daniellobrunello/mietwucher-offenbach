@@ -18,6 +18,8 @@ services:
     restart: always
     depends_on:
       - mongodb
+    env_file:
+      - .env
     environment:
       # - FLATHUNTER_TARGET_URLS=https://www.immobilienscout24.de/Suche/...;https://www.kleinanzeigen.de/...
       # - FLATHUNTER_DATABASE_LOCATION=

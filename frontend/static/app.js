@@ -8,6 +8,37 @@ let priceChart = null;
 const PRICE_LOW_THRESHOLD = 11;
 const PRICE_HIGH_THRESHOLD = 13;
 
+/**
+ * Parse numbers in German/English formats.
+ */
+function parseLocaleNumber(value) {
+    if (value === null || value === undefined) return NaN;
+    if (typeof value === 'number') return value;
+
+    let str = String(value).trim();
+    if (!str) return NaN;
+
+    str = str.replace(/€|eur|\$/gi, '');
+    str = str.replace(/m²|qm|m2/gi, '');
+    str = str.replace(/\s+/g, '');
+
+    const match = str.match(/[\d.,]+/);
+    if (!match) return NaN;
+
+    let numberStr = match[0];
+    const lastComma = numberStr.lastIndexOf(',');
+    const lastPeriod = numberStr.lastIndexOf('.');
+
+    if (lastComma > lastPeriod) {
+        numberStr = numberStr.replace(/\./g, '').replace(',', '.');
+    } else {
+        numberStr = numberStr.replace(/,/g, '');
+    }
+
+    const num = Number(numberStr);
+    return Number.isNaN(num) ? NaN : num;
+}
+
 // Initialize app when DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
     loadApartments();
@@ -50,8 +81,8 @@ async function loadApartments() {
         
         // Calculate price per square meter for each apartment
         apartments = apartments.map(apt => {
-            const price = parseFloat(apt.price) || 0;
-            const size = parseFloat(apt.size) || 0;
+            const price = parseLocaleNumber(apt.price) || 0;
+            const size = parseLocaleNumber(apt.size) || 0;
             const pricePerSqm = size > 0 ? price / size : 0;
             
             return {
@@ -95,6 +126,10 @@ async function loadStatistics() {
         document.getElementById('stat-normal').textContent = data.total.normal;
         document.getElementById('stat-hoch').textContent = data.total.hoch;
         
+        const meanValue = data.mean_eur_per_sqm;
+        document.getElementById('stat-mean').textContent = 
+            meanValue !== null && meanValue !== undefined ? meanValue.toFixed(2) : 'N/A';
+        
         // Create chart
         createChart(data.timeline);
         
@@ -103,6 +138,7 @@ async function loadStatistics() {
         document.getElementById('stat-niedrig').textContent = 'Fehler';
         document.getElementById('stat-normal').textContent = 'Fehler';
         document.getElementById('stat-hoch').textContent = 'Fehler';
+        document.getElementById('stat-mean').textContent = 'Fehler';
     }
 }
 
@@ -335,11 +371,11 @@ function handleSort(column) {
         
         // Handle special cases
         if (column === 'price' || column === 'size') {
-            aVal = parseFloat(aVal) || 0;
-            bVal = parseFloat(bVal) || 0;
+            aVal = parseLocaleNumber(aVal) || 0;
+            bVal = parseLocaleNumber(bVal) || 0;
         } else if (column === 'rooms') {
-            aVal = parseFloat(aVal) || 0;
-            bVal = parseFloat(bVal) || 0;
+            aVal = parseLocaleNumber(aVal) || 0;
+            bVal = parseLocaleNumber(bVal) || 0;
         } else if (column === 'price_per_sqm') {
             aVal = a.price_per_sqm || 0;
             bVal = b.price_per_sqm || 0;
@@ -398,11 +434,8 @@ function createTableRow(apt) {
     // Format furnished status
     const furnishedBadge = getFurnishedBadge(apt.furnished);
     
-    // Check if we should show "Verklagen" button
-    const shouldShowReportButton = apt.price_category === 'high' && !isFurnished(apt.furnished);
-    const reportButton = shouldShowReportButton 
-                ? `<a href="${generateReportEmail(apt)}" class="btn-report" title="Mietwucher melden">VERKLAGEN</a>`
-        : '';
+    // Always show "Verklagen" button
+    const reportButton = `<a href="${generateReportEmail(apt)}" class="btn-report" title="Mietwucher melden">VERKLAGEN</a>`;
     
     return `
         <tr class="${rowClass}">

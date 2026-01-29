@@ -34,6 +34,7 @@ class Env:
     FLATHUNTER_CAPMONSTER_KEY = _read_env("FLATHUNTER_CAPMONSTER_KEY")
     FLATHUNTER_HEADLESS_BROWSER = _read_env("FLATHUNTER_HEADLESS_BROWSER")
     FLATHUNTER_IS24_COOKIE = _read_env("FLATHUNTER_IS24_COOKIE")
+    FLATHUNTER_AWS_WAF_TOKEN = _read_env("FLATHUNTER_AWS_WAF_TOKEN")
 
     # Generic Config
     FLATHUNTER_TARGET_URLS = _read_env("FLATHUNTER_TARGET_URLS")
@@ -318,6 +319,10 @@ Preis: {price}
         """Return the precalculated immoscout cookie"""
         return self._read_yaml_path('immoscout_cookie', None)
 
+    def aws_waf_token(self):
+        """Return AWS WAF token cookie value if configured"""
+        return self._read_yaml_path('aws_waf_token', None)
+
     def __repr__(self):
         return json.dumps({
             "captcha_enabled": self.captcha_enabled(),
@@ -485,3 +490,6 @@ class Config(CaptchaEnvironmentConfig):  # pylint: disable=too-many-public-metho
 
     def immoscout_cookie(self):
         return Env.FLATHUNTER_IS24_COOKIE() or super().immoscout_cookie()
+
+    def aws_waf_token(self):
+        return Env.FLATHUNTER_AWS_WAF_TOKEN() or super().aws_waf_token()

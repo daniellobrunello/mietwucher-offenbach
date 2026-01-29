@@ -157,7 +157,9 @@ class FlatHtmlParser:
             return details # Return whatever was extracted before the error
 
         # --- LLM Enhancement Step ---
-        if self.llm_client and soup is not None:
+        key_fields = ['kaltmiete', 'warmmiete', 'size_sqm', 'rooms', 'address']
+        should_use_llm = any(details.get(field) is None for field in key_fields)
+        if self.llm_client and soup is not None and should_use_llm:
             try:
                 # Example: Use LLM to potentially fill missing fields or add summary
                 details = self._enhance_with_llm(details, soup)
@@ -694,28 +696,39 @@ class FlatHtmlParser:
         except Exception as e:
             logging.warning(f"Failed to save cleaned HTML debug file: {e}")
 
+    def _parse_number(self, text: str) -> Optional[float]:
+        """Helper to parse numbers in German/English formats."""
+        if not text:
+            return None
+        cleaned_text = str(text).replace(' ', '')
+        match = re.search(r'[\d.,]+', cleaned_text)
+        if not match:
+            return None
+        number_str = match.group()
+        last_comma = number_str.rfind(',')
+        last_period = number_str.rfind('.')
+        try:
+            if last_comma > last_period:
+                number_str = number_str.replace('.', '').replace(',', '.')
+            else:
+                number_str = number_str.replace(',', '')
+            return float(number_str)
+        except ValueError:
+            return None
+
     def _parse_currency(self, text: str) -> Optional[float]:
         """Helper to parse price strings."""
         if not text:
             return None
-        # Remove currency symbols, thousand separators, convert comma decimal separator
-        cleaned_text = re.sub(r'[€$£]|[.\s]', '', text).replace(',', '.')
-        try:
-            return float(cleaned_text)
-        except ValueError:
-            return None
+        cleaned_text = re.sub(r'(€|eur|usd|gbp)', '', str(text), flags=re.IGNORECASE)
+        return self._parse_number(cleaned_text)
 
     def _parse_sqm(self, text: str) -> Optional[float]:
-        """Helper to parse size strings (e.g., '100.5 m²')."""
+        """Helper to parse size strings (e.g., '100.5 m²', '41,99 m²')."""
         if not text:
             return None
-        match = re.search(r'([\d.,]+)', text)
-        if match:
-            try:
-                return float(match.group(1).replace('.', '').replace(',', '.'))
-            except ValueError:
-                return None
-        return None
+        cleaned_text = str(text).replace('m²', '').replace('m2', '').replace('qm', '')
+        return self._parse_number(cleaned_text)
 
     def _parse_rooms(self, text: str) -> Optional[float]:
         """Helper to parse room count strings (e.g., '3 Zimmer', '2.5 rooms')."""

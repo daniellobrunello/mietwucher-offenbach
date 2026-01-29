@@ -61,6 +61,8 @@ class CapmonsterSolver(CaptchaSolver):
         logger.info("Got response from capmonster: %s", submit_response.text)
 
         response_json = submit_response.json()
+        if response_json.get("errorId", 0) != 0:
+            raise requests.HTTPError(response=submit_response)
 
         return response_json["taskId"]
 
@@ -72,12 +74,14 @@ class CapmonsterSolver(CaptchaSolver):
             "taskId": captcha_id
         }
         while True:
-            retrieve_response = requests.get(retrieve_url, json=params, timeout=30)
+            retrieve_response = requests.post(retrieve_url, json=params, timeout=30)
             logger.debug("Got response from capmonster: %s", retrieve_response.text)
 
             response_json = retrieve_response.json()
-            if not "status" in response_json:
-                raise requests.HTTPError(response=response_json["errorCode"])
+            if response_json.get("errorId", 0) != 0:
+                raise requests.HTTPError(response=retrieve_response)
+            if "status" not in response_json:
+                raise requests.HTTPError(response=retrieve_response)
 
             if response_json["status"] == "processing":
                 logger.info("Captcha is not ready yet, waiting...")

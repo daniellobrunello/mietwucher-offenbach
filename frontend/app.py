@@ -18,6 +18,7 @@ app = FastAPI(title="Flathunter Frontend API")
 # MongoDB configuration
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://mongodb:27017/")
 DB_NAME = "flathunter"
+MIN_SIZE_SQM = float(os.getenv("MIN_SIZE_SQM", "12"))
 
 def get_mongo_db():
     """Get MongoDB database connection"""
@@ -179,7 +180,7 @@ async def get_statistics():
             size = parse_size(size_str)
             
             created_date = doc.get('created')
-            if created_date:
+            if created_date and (size is None or size >= MIN_SIZE_SQM):
                 apartments_data.append({
                     'date': created_date,
                     'price': price,
@@ -218,7 +219,7 @@ async def get_statistics():
             # Get date - prefer processed_at, fallback to created
             date = doc.get('processed_at') or doc.get('created')
             
-            if date:
+            if date and (size is None or size >= MIN_SIZE_SQM):
                 apartments_data.append({
                     'date': date,
                     'price': price,
@@ -231,10 +232,12 @@ async def get_statistics():
     
     date_stats = defaultdict(lambda: {'niedrig': 0, 'normal': 0, 'hoch': 0})
     total_stats = {'niedrig': 0, 'normal': 0, 'hoch': 0}
+    price_per_sqm_values = []
     
     for apt in apartments_data:
         if apt['price'] and apt['size'] and apt['size'] > 0:
             price_per_sqm = apt['price'] / apt['size']
+            price_per_sqm_values.append(price_per_sqm)
             
             # Determine category
             if price_per_sqm <= 11:
@@ -264,9 +267,14 @@ async def get_statistics():
             'hoch': stats['hoch']
         })
     
+    mean_price_per_sqm = None
+    if price_per_sqm_values:
+        mean_price_per_sqm = round(sum(price_per_sqm_values) / len(price_per_sqm_values), 2)
+    
     return {
         'total': total_stats,
-        'timeline': timeline
+        'timeline': timeline,
+        'mean_eur_per_sqm': mean_price_per_sqm
     }
 
 @app.get("/api/apartments")
@@ -363,7 +371,8 @@ async def get_apartments():
                 apt['price_per_sqm'] = None
                 apt['high_rent'] = False
             
-            apartments.append(apt)
+            if size is None or size >= MIN_SIZE_SQM:
+                apartments.append(apt)
     else:
         # Process the LLM-enhanced exposes
         apartments = []
@@ -469,7 +478,8 @@ async def get_apartments():
                 apt['price_per_sqm'] = None
                 apt['high_rent'] = False
             
-            apartments.append(apt)
+            if size is None or size >= MIN_SIZE_SQM:
+                apartments.append(apt)
     
     logger.info(f"Returning {len(apartments)} processed apartments")
     return apartments

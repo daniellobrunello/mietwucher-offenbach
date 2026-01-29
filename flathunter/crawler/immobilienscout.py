@@ -184,7 +184,13 @@ class Immobilienscout(Crawler):
 
     def set_cookie(self):
         """Sets request header cookie parameter to identify as a logged in user"""
-        self.HEADERS['Cookie'] = f'reese84:${self.config.immoscout_cookie()}'
+        cookie_parts = []
+        if self.config.immoscout_cookie() is not None:
+            cookie_parts.append(f'reese84:{self.config.immoscout_cookie()}')
+        if self.config.aws_waf_token() is not None:
+            cookie_parts.append(f'aws-waf-token={self.config.aws_waf_token()}')
+        if cookie_parts:
+            self.HEADERS['Cookie'] = '; '.join(cookie_parts)
 
     def get_page(self, search_url, driver=None, page_no=None):
         """Applies a page number to a formatted search URL and fetches the exposes at that page"""

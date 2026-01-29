@@ -112,8 +112,7 @@ test_pages/
 # Chromedriver / Webdriver Manager
 .wdm/
 
-# Pip requirements - should not be committed
-requirements.txt
-
 # OS files
 .DS_Store
+._*
+.smbdelete*

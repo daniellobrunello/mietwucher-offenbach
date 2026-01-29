@@ -1,7 +1,8 @@
 import os
 import logging
+import re
 from datetime import datetime, timedelta
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from dotenv import load_dotenv
 
 from flathunter.idmaintainer_mongo import IdMaintainer
@@ -70,11 +71,35 @@ class ExposeProcessor:
                     html_content=html_content,
                     url=expose.get('url')
                 )
+
+                # Preserve crawler-provided title when parser returns None
+                title_fallback = expose.get('title')
+                if title_fallback is None and 'details' in expose:
+                    title_fallback = expose['details'].get('title')
+                if enhanced_details.get('title') is None and title_fallback:
+                    enhanced_details['title'] = title_fallback
                 
                 # Merge the enhanced details with the original expose
                 # Crawler-provided fields (like title) are NOT overwritten by HTML parser
                 processed_expose = expose.copy()
-                processed_expose.update(enhanced_details)
+                for key, value in enhanced_details.items():
+                    if value is not None:
+                        processed_expose[key] = value
+
+                # Normalize size_sqm from crawler size string to avoid locale issues
+                size_text = expose.get('size')
+                if size_text is None and 'details' in expose:
+                    size_text = expose['details'].get('size')
+                size_text = size_text or expose.get('size_sqm')
+                if size_text is None and 'details' in expose:
+                    size_text = expose['details'].get('size_sqm')
+
+                parsed_size = self._parse_number(size_text)
+                if parsed_size is not None:
+                    processed_expose['size_sqm'] = parsed_size
+                elif 'size_sqm' in processed_expose:
+                    processed_expose['size_sqm'] = None
+
                 
                 processed_exposes.append(processed_expose)
                 
@@ -85,6 +110,36 @@ class ExposeProcessor:
                 continue
         
         return processed_exposes
+
+    def _parse_number(self, value: Optional[str]) -> Optional[float]:
+        """Parse German/English formatted numbers like 40,21 or 1.234,56."""
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+
+        value_str = str(value).strip()
+        if not value_str:
+            return None
+
+        value_str = value_str.replace('m²', '').replace('m2', '').replace('qm', '')
+        match = re.search(r'[\d.,]+', value_str)
+        if not match:
+            return None
+
+        number_str = match.group()
+        last_comma = number_str.rfind(',')
+        last_period = number_str.rfind('.')
+
+        try:
+            if last_comma > last_period:
+                number_str = number_str.replace('.', '').replace(',', '.')
+            else:
+                number_str = number_str.replace(',', '')
+            return float(number_str)
+        except ValueError:
+            return None
+
 
     def save_processed_exposes(self, processed_exposes: List[Dict[str, Any]], collection_name: str = "processed_exposes") -> int:
         """
